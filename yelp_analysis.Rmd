@@ -1,0 +1,564 @@
+---
+title: "What drives Yelping Fans?"
+author: "Eric Perales, Christian Tucker, Faisal Hoda"
+date: 'Due: Wednesday, December 14 by 11:59 PM CDT'
+output:
+  html_document:
+    toc: yes
+---
+```{r init, echo = FALSE, message = FALSE, warning = FALSE}
+
+if(!"ggplot2" %in% installed.packages()) {
+  install.packages("ggplot2")
+}
+library(ggplot2)
+
+if(!"GGally" %in% installed.packages()) {
+  install.packages("GGally")
+}
+library(GGally)
+
+if(!"gridExtra" %in% installed.packages()) {
+  install.packages("gridExtra")
+}
+library(gridExtra)
+
+if(!"broom" %in% installed.packages()) {
+  install.packages("broom")
+}
+library(broom)
+
+if(!"lmtest" %in% installed.packages()) {
+  install.packages("lmtest")
+}
+library(lmtest)
+
+if(!"faraway" %in% installed.packages()) {
+  install.packages(faraway)
+}
+library(faraway)
+
+if(!"MASS" %in% installed.packages()){
+  install.packages("MASS")
+}
+library(MASS)
+
+if(!"leaps" %in% installed.packages()){
+  install.packages("leaps")
+}
+library(leaps)
+
+if(!"caret" %in% installed.packages()){
+  install.packages("caret")
+}
+library(caret)
+
+options(scipen = 1, digits = 4, width = 80)
+
+```
+
+
+```{r, functions, echo = FALSE}
+plot.fitted.residuals = function(model, pointcol = "dodgerblue", linecol = "darkorange") {
+  plot(fitted(model), resid(model),
+       col = pointcol, pch = 20, cex = 1.5,
+       xlab = "Fitted", ylab = "Residuals")
+  abline(h = 0, col = linecol, lwd = 2)
+}
+
+plot.qq = function(model, pointcol = "dodgerblue", linecol = "darkorange") {
+  qqnorm(resid(model), col = pointcol, pch = 20, cex = 1.5)
+  qqline(resid(model), col = linecol, lwd = 2)
+}
+
+calc.loocv.rmse <- function(model) {
+  sqrt(mean((resid(model) / (1 - hatvalues(model))) ^ 2))
+}
+
+```
+
+
+```{r DataLoad}
+
+#Loads the altered Yelp Dataset (took out users with less than 25 fans)
+yelp_data = read.csv("yelp_data.csv", sep = ',', header = T)
+
+# remove sd_neg_score and sd_pos_score - fields contain NA values
+yelp.cols <- names(yelp_data)
+
+yelp_data <- yelp_data[yelp_data$fans < 3000, yelp.cols[2:15]]
+```
+
+
+# Introduction
+
+  Yelp is one of most innovative company's of the 21st Century. Starting in 2004 this company has become a household name, helping people hroughout the globe, find and review businesses, events, and resturants. Over that time period they have built one of the largest online interactive communities. They have opened up a large portion of their dataset to everybody in their 8th round dataset challenge where the participants are free to be as creative as their mind will allow to use the data to create something novel and innovative.
+
+  We are utlizing a small subset of this data to explore the relationships between the number of fans associated to a given user with various attributes, based on their yelping activity. What factors are vital when it comes to the number of Fans a person has? Is it writing highly detailed reviews, focusing on specific types of businesses and restaurants, the amount of cool_votes a person has, or is it based off popularity of the businesses and restaurants? The variables we are utilizing are review_count, friends, funny_votes, useful_votes, cool_votes, years_yelping, avg_rvw_length, average_stars, avg_sentiment, neg_learning_reviews, pos_learning_reviews, avg_neg_score, avg_pos_score, sd_neg_score, sd_postive_score. Please see the data dictionary in the appendix of the report to explain what each one of these variables mean and some vital attributes of each.
+  
+  This analysis could begin to answer many questions around user activity and resulting fan-based actions.  For example, is the Yelp Elite Squad a worthwhile program?  Can Yelp further engage local businesses to help drive traffic to a given type of business.  On the flip side, users in the Yelp Elite Squad could understand what it takes to build a robust fan base.
+  
+  This report covers various forms of model development and refinement.  While we aimed to provide a robust model around with explanatory power, this proved to be quite the challenge, given the data.  In the end, we ended up with a model that could potentially be useful in predicting fan growth across the Yelp ecosystem.
+  
+The label distribution: `Fans`
+
+```{r lebel_viz}
+
+p1 <- qplot(yelp_data$fans,
+      geom = "histogram",
+      #main = "Fans Distribution",
+      bins = 20,
+      xlab = expression("Fans"),
+      fill=I("blue"), 
+      col=I("red"),
+      alpha=I(.2))
+
+p2 <- qplot(log(yelp_data$fans),
+      geom = "histogram",
+      #main = "Fans Distribution",
+      bins = 20,
+      xlab = expression(paste("Fans - ", log[10])),
+      fill=I("blue"), 
+      col=I("red"),
+      alpha=I(.2))
+
+grid.arrange(p1, p2, ncol=2, top = "Fans Distribution")
+
+```
+
+
+
+# Methods
+
+## Data Preparation
+
+  The Yelp Academic data set included numerous json file, which included users, businesses, reviews and tips.  In order not to limit ourselve, all data was loaded into a PostgreSQL 9.6 ODBMS.  This allowed us to leverage the built-in JSON functions.  From there, we were in a position to perform a bit of feature engineering.  Specifically, we performed some sentiment analysis with the VADER Sentiment package - https://github.com/cjhutto/vaderSentiment.  Users with greater than or equal to 25 fans were isolated and their reviews extracted and run through the sentiment analysis engine and inserted back into the database with `positive` and `negative` scores.  Other derived fields include `average review length`, in characters, years as a memeber of the Elite Squad (`years elite`).  Finally, an output file in csv format was produced.
+
+
+`Hutto, C.J. & Gilbert, E.E. (2014). VADER: A Parsimonious Rule-based Model for Sentiment Analysis of Social Media Text. Eighth International Conference on Weblogs and Social Media (ICWSM-14). Ann Arbor, MI, June 2014.`
+
+## ANOVA
+
+  Yelp maintains a program dubbed the Yelp Elite Squad.  There is an application process where prospects have to show their best stuff when it comes to reviewing and creating quality content.
+  
+We looked at various effects and their impact on the targeted label - `fans`.  Specifically, the following characteristics were explored - ordered factors were produced from ordinal data:
+
+  - Elite Tenure - How long a user has been in the Yelp Elite program.
+  - Positivity - Generally, how positive are the user's reviews.
+  - Negativity - Generally, how negative are the user's reviews.
+
+Potential effects were found using a $alpha$ = 0.01.  Both `elite_level` and `positivity` showed a potential effect, while `negativity` was not found to provide an effect.  Although it is interesting that the more negative reviews show to have a higher mean.  It is not surprising that polar reviewers attract fans - much like an entertainment factor.
+
+```{r ANOVA}
+
+# Elite Tenure
+yelp_data$elite_level <- cut(yelp_data$years_elite,
+                        breaks = c(-Inf, 2, 4, Inf),
+                        labels = c("newbie", "tenured", "vet"),
+                        right = F,
+                        ordered_result = T)
+
+#  Create Positive and Negative Review Bands
+yelp_data$positivity <- cut(yelp_data$pos_leaning_reviews,
+                        breaks = pretty(x = yelp_data$pos_leaning_reviews, n = 2),
+                        labels = c("Low", "Medium", "High"),
+                        right = F,
+                        ordered_result = T)
+
+yelp_data$negativity <- cut(yelp_data$neg_leaning_reviews,
+                        breaks = pretty(x = yelp_data$neg_leaning_reviews, n = 2),
+                        labels = c("Low", "High"),
+                        right = F,
+                        ordered_result = T)
+
+
+# Elite Level Effect?
+p1 <- ggplot(yelp_data, aes(x = elite_level, y = log(fans), fill = elite_level)) + 
+  geom_boxplot() +
+  stat_summary(fun.y = mean, shape = 1, col = 'red', geom = 'point', size = 2)
+
+# Positivity Effect?
+p2 <- ggplot(yelp_data, aes(x = positivity, y = log(fans), fill = positivity)) + 
+  geom_boxplot() +
+  stat_summary(fun.y = mean, shape = 1, col = 'red', geom = 'point', size = 2)
+
+# Negativity Effect?
+p3 <- ggplot(yelp_data, aes(x = negativity, y = fans, fill = negativity)) + 
+  geom_boxplot() +
+  stat_summary(fun.y = mean, shape = 1, col = 'red', geom = 'point', size = 2)
+
+
+grid.arrange(p1, p2, p3, ncol=2)
+
+# Elite Level
+elite_aov <- aov(fans ~ elite_level, data = yelp_data)
+elite_levels <- data.frame(elite_level = unique(yelp_data$elite_level))
+data.frame(elite_levels, fans = predict(elite_aov, elite_levels))
+
+summary(elite_aov)
+
+# Positivity 
+pos_aov <- aov(fans ~ positivity, data = yelp_data)
+positivity_levels <- data.frame(positivity = unique(yelp_data$positivity)) 
+data.frame(positivity_levels, fans = predict(pos_aov, positivity_levels))
+
+summary(pos_aov)
+
+# Negativity 
+neg_aov <- aov(fans ~ negativity, data = yelp_data)
+negativity_levels <- data.frame(negativity = unique(yelp_data$negativity)) 
+data.frame(negativity_levels, fans = predict(neg_aov, negativity_levels))
+
+summary(neg_aov)
+
+```
+
+
+
+```{r model_supporting_functions, echo = F}
+# Print sum of influential points and return model's cook distance values to subset
+get.influential.obs <- function(model) {
+  model.cd <- cooks.distance(model)
+  sum(model.cd > 4 / length(model))
+  
+  model.cd
+}
+
+# Print Diagnostics
+gen.diag <- function(model) {
+  
+  # Model Summary
+  print(summary(model))
+  
+  # QQ Plot
+  plot.qq(model)
+  
+  # Plot fitted vs residuals
+  plot.fitted.residuals(model)
+  
+  # LOOCV RMSE
+  cat("LOOCV RMSE:\n")
+  print(calc.loocv.rmse(model))
+  cat("\n")
+  
+  # VIF
+  cat("VIFs:\n")
+  print(vif(model))
+  
+  # Test for Homoscedasticity
+  print(bptest(model))
+}
+```
+
+## Model Development
+
+  A correlation matrix was used to easily uncover relationships between `fans` and potential predictors.  From there, model development ensues.
+
+```{r CorrelationMatrix, Messages = FALSE, Warnings = FALSE}
+
+ggcorr(yelp_data[, 1:14], palette = "RdYlGn", name = "rho", 
+       label = FALSE, label_color = "black")
+
+```
+
+  Baseline set with influential variables.  
+  
+  Diagnostics show that both normality and homoscedasticity are violated. Potential transformation could help alleviate.  Variable Inflation Factors look good, while LOOCV RMSE is high.  Neither explanation nor prediction could be of value with this model.
+
+```{r IterativeModel1}
+# Starting Model after correlation matrix analysis and ANOVA
+yelp.man <- lm(fans ~ elite_level + review_count + friends + useful_votes + pos_leaning_reviews + average_stars, data = yelp_data)
+
+gen.diag(yelp.man)
+
+# Remove Influential Points
+yelp.man.cd <- get.influential.obs(yelp.man)
+
+yelp.man <- lm(fans ~ elite_level + review_count + friends + useful_votes + pos_leaning_reviews + average_stars, data = yelp_data, subset = yelp.man.cd < 4 / length(yelp.man))
+
+gen.diag(yelp.man)
+
+# Output Estimated Coefficients
+tidy(yelp.man)
+```
+
+  A variable stabilizing transformation is employed here - $log[10]$.  
+  
+  Diagnostics show that both normality and homoscedasticity are violated.  Variable Inflation Factors look good, while LOOCV RMSE is very low  Explanation is not feasible here, though prediction could be.
+
+```{r IterativeModel2}
+
+# Diagnostics prove that transformations are necessary - Variable Stabilizing Transforming - $log[10]
+yelp.man <- lm(log(fans) ~ elite_level + review_count + friends + useful_votes + pos_leaning_reviews + average_stars, data = yelp_data)
+
+gen.diag(yelp.man)
+
+# Remove Influential Points
+yelp.man.cd <- get.influential.obs(yelp.man)
+
+yelp.man <- lm(log(fans) ~ elite_level + review_count + friends + useful_votes + pos_leaning_reviews + average_stars, data = yelp_data, subset = yelp.man.cd < 4 / length(yelp.man))
+
+gen.diag(yelp.man)
+
+# Output Estimated Coefficients
+tidy(yelp.man)
+```
+
+  A variable stabilizing transformation is employed here - BoxCox.  
+  
+  Diagnostics show that both normality and homoscedasticity are violated.  However, Q-Q Plot looks solid here - best in show.  Variable Inflation Factors look good, while LOOCV RMSE is very low  Explanation is not feasible here, though prediction could be.
+
+```{r IterativeModel3}
+
+# look at predictor transformations as well
+yelp.man <- lm(fans ~ elite_level + poly(review_count, 2) + poly(friends, 2) + poly(useful_votes, 2) + poly(neg_leaning_reviews, 2) + poly(average_stars, 2), data = yelp_data)
+
+gen.diag(yelp.man)
+
+boxcox(yelp.man, plotit = TRUE, lambda = seq(-1, 0, by = 0.1))
+
+# Remove Influential Points
+yelp.man.cd <- get.influential.obs(yelp.man)
+
+yelp.man <- lm( (((fans ^ -0.48) - 1) / -0.48) ~ elite_level + poly(review_count, 2) + poly(friends, 2) + poly(useful_votes, 2) + poly(neg_leaning_reviews, 2) + poly(average_stars, 2), data = yelp_data, subset = yelp.man.cd < 4 / length(yelp.man.cd))
+
+gen.diag(yelp.man)
+
+# Output Estimated Coefficients
+tidy(yelp.man)
+```
+
+
+  A variable stabilizing transformation is employed here - $log[10]$.  Additionally, predictor transformation through higher order polynomilas are employed.   
+  
+  Diagnostics show that both normality and homoscedasticity are violated.  Variable Inflation Factors look good, while LOOCV RMSE is very low  Explanation is not feasible here, though prediction could be.
+
+```{r IterativeModel4}
+
+# look at predictor transformations as well
+yelp.man <- lm(log(fans) ~ elite_level + poly(review_count, 2) + poly(friends, 2) + poly(useful_votes, 2) + poly(neg_leaning_reviews, 2) + poly(average_stars, 2), data = yelp_data)
+
+gen.diag(yelp.man)
+
+# Remove Influential Points
+yelp.man.cd <- get.influential.obs(yelp.man)
+
+yelp.man <- lm(log(fans) ~ elite_level + poly(review_count, 2) + poly(friends, 2) + poly(useful_votes, 2) + poly(neg_leaning_reviews, 2) + poly(average_stars, 2), data = yelp_data, subset = yelp.man.cd < 4 / length(yelp.man))
+
+gen.diag(yelp.man)
+
+# Output Estimated Coefficients
+tidy(yelp.man)
+```
+
+
+
+```{r Interactive Model}
+#Model Chosen
+fans_model_int = lm(log(fans) ~ friends + useful_votes * cool_votes, data = yelp_data)
+#summary(fans_model_int)
+
+
+n = length(resid(fans_model_int))
+fans_model_int_bic_back = step(fans_model_int, direction = "backward",k = log(n), trace = 0)
+#fans_model_int_bic_back
+
+calc.loocv.rmse(fans_model_int_bic_back)
+summary(fans_model_int_bic_back)$adj.r.squared
+
+#Residuals vs. Fitted Plot -- Checking Linarity and Constant Variance 
+plot(fitted(fans_model_int_bic_back), resid(fans_model_int_bic_back), col = "dodgerblue", xlab = "Fitted", ylab = "Residual")
+abline(h = 0, col = "darkorange", lwd = 2)
+#Violation of Constance Variance & Linarity 
+
+#Breusch-Pagan Test -- Checking for Constant Variance (Formal)
+bptest(fans_model_int_bic_back)
+#Constant Variance Assumption Violated W/ Low P-Value Reject The Null Homoscedasity 
+
+#Q-Q Plot -- Checking Normal Distribution 
+qqnorm(resid(fans_model_int_bic_back), main = "Normal Q-Q Plot", col = "dodgerblue")
+qqline(resid(fans_model_int_bic_back), col = "darkorange", lwd = 2)
+#Errors do NOT follow a normal distribution
+
+
+#Checking for points with a large leverage 
+sum(hatvalues(fans_model_int_bic_back) > 2 * mean(hatvalues(fans_model_int_bic_back)))
+
+
+#Checking for points with a large residuals
+sum(abs(rstandard(fans_model_int_bic_back)) > 2)
+
+
+#Checking for points that have influential -- Points that can skew the model 
+cd_fans_mod_bic = cooks.distance(fans_model_int_bic_back)
+sum(cd_fans_mod_bic > 4 / length(cd_fans_mod_bic))
+
+
+coef(fans_model_int_bic_back)
+
+#----------------------------------------------------------
+
+#Creating another model that will take out the influential points --- DON'T FORGET TO CHANGE THE MODEL BELOW
+cd_fans__int_fix = lm(log(fans) ~ friends + useful_votes * cool_votes, data = yelp_data, subset = cd_fans_mod_bic <= 4 / length(cd_fans_mod_bic))
+coef(cd_fans__int_fix)
+
+#Residuals vs. Fitted Plot -- Checking Linarity and Constant Variance
+plot(fitted(cd_fans__int_fix), resid(cd_fans__int_fix), col = "dodgerblue", xlab = "Fitted", ylab = "Residual")
+abline(h = 0, col = "darkorange", lwd = 2)
+
+#Breusch-Pagan Test -- Checking for Constant Variance (Formal)
+bptest(cd_fans__int_fix)
+
+#Q-Q Plot -- Checking Normal Distribution 
+qqnorm(resid(cd_fans__int_fix), main = "Normal Q-Q Plot, fit1", col = "dodgerblue")
+qqline(resid(cd_fans__int_fix), col = "darkorange", lwd = 2)
+
+
+calc.loocv.rmse(cd_fans__int_fix)
+summary(cd_fans__int_fix)$adj.r.squared
+```
+
+We started with a model based off of a lot of trail and error. We then utilized the BIC selection formula to find the best combination. After some model diaginostics we then realized we had numerous influentials points which we removed creating our go to model. 
+
+```{r Finally}
+#Model Chosen
+fans_model = lm(log(fans) ~ poly(friends, 3) + poly(useful_votes,2), data = yelp_data)
+#summary(fans_model)
+
+n = length(resid(fans_model))
+fans_model_bic_back = step(fans_model, direction = "backward",k = log(n), trace = 0)
+#fans_model_bic_back
+
+calc.loocv.rmse(fans_model_bic_back)
+summary(fans_model_bic_back)$adj.r.squared
+
+#Residuals vs. Fitted Plot -- Checking Linarity and Constant Variance 
+plot(fitted(fans_model_bic_back), resid(fans_model_bic_back), col = "dodgerblue", xlab = "Fitted", ylab = "Residual")
+abline(h = 0, col = "darkorange", lwd = 2)
+#Violation of Constance Variance & Linarity 
+
+#Breusch-Pagan Test -- Checking for Constant Variance (Formal)
+library(lmtest)
+bptest(fans_model_bic_back)
+#Constant Variance Assumption Violated W/ Low P-Value Reject The Null Homoscedasity 
+
+#Q-Q Plot -- Checking Normal Distribution 
+qqnorm(resid(fans_model_bic_back), main = "Normal Q-Q Plot", col = "dodgerblue")
+qqline(resid(fans_model_bic_back), col = "darkorange", lwd = 2)
+#Errors do NOT follow a normal distribution
+
+#Shapiro Test -- Checking Normalit(Formal)
+shapiro.test(head(resid(fans_model_bic_back), 5000))
+
+#Checking for points with a large leverage 
+sum(hatvalues(fans_model_bic_back) > 2 * mean(hatvalues(fans_model_bic_back)))
+
+
+#Checking for points with a large residuals
+sum(abs(rstandard(fans_model_bic_back)) > 2)
+
+
+#Checking for points that have influential -- Points that can skew the model 
+cd_fans_mod_bic = cooks.distance(fans_model_bic_back)
+sum(cd_fans_mod_bic > 4 / length(cd_fans_mod_bic))
+
+
+coef(fans_model_bic_back)
+
+#----------------------------------------------------------
+
+#Creating another model that will take out the influential points --- DON'T FORGET TO CHANGE THE MODEL BELOW
+cd_fans_fix = lm(log(fans) ~ poly(friends, 3) + poly(useful_votes,2), data = yelp_data, subset = cd_fans_mod_bic <= 4 / length(cd_fans_mod_bic))
+coef(cd_fans_fix)
+
+#Residuals vs. Fitted Plot -- Checking Linarity and Constant Variance
+plot(fitted(cd_fans_fix), resid(cd_fans_fix), col = "dodgerblue", xlab = "Fitted", ylab = "Residual")
+abline(h = 0, col = "darkorange", lwd = 2)
+
+#Breusch-Pagan Test -- Checking for Constant Variance (Formal)
+bptest(cd_fans_fix)
+
+#Q-Q Plot -- Checking Normal Distribution 
+qqnorm(resid(cd_fans_fix), main = "Normal Q-Q Plot, fit1", col = "dodgerblue")
+qqline(resid(cd_fans_fix), col = "darkorange", lwd = 2)
+
+#Shapiro Test -- Checking Normalit(Formal)
+shapiro.test(head(resid(cd_fans_fix), 5000))
+
+
+calc.loocv.rmse(cd_fans_fix)
+summary(cd_fans_fix)$adj.r.squared
+```
+
+# Results
+```{r Results}
+
+#Creating another model that will take out the influential points from the dataset
+cd_fans_fix = lm(log(fans) ~ poly(friends, 3) + poly(useful_votes,2), data = yelp_data, subset = cd_fans_mod_bic <= 4 / length(cd_fans_mod_bic))
+coef(cd_fans_fix)
+
+#Checking RMSE for model fit 
+calc.loocv.rmse(cd_fans_fix)
+summary(cd_fans_fix)$adj.r.squared
+
+#Residuals vs. Fitted Plot -- Checking Linearity and Constant Variance
+plot(fitted(cd_fans_fix), resid(cd_fans_fix), col = "dodgerblue", xlab = "Fitted", ylab = "Residual", main = "Fans Model - Residuals vs Fitted Plot")
+abline(h = 0, col = "darkorange", lwd = 2)
+
+#Breusch-Pagan Test -- Checking for Constant Variance (Formal)
+bptest(cd_fans_fix)
+
+#Q-Q Plot -- Checking Normal Distribution 
+qqnorm(resid(cd_fans_fix), main = "Fans Model Q-Q Plot", col = "dodgerblue")
+qqline(resid(cd_fans_fix), col = "darkorange", lwd = 2)
+
+
+```
+
+# Discussion
+> "The greatest value of a picture is when it forces us to notice what we never expected to see." 
+- **John Turkey**
+
+  We never expected to see a picture that would make us come to terms that finding the perfect model wasn't going to happen with this dataset. With this Yelp dataset we tried to find a good model to explain the number of fans a person has with the other variables in the dataset. We didn't quite accomplish this task but we were able to deploy numerous concepts that we learned in this course to a real world example. We learned that sometimes it's very hard to find that perfect model that fits all the assumptions, fits the data, and explains a certain relationship well. 
+
+  We started with the data getting it prepared for we could create a model. We removed two columns that had numerous NAs, removed all the users that had 25 or less fans, and we also created some variables of our own. We choose our model based off of a lot of trail and error while taking into account ANOVA trails to find the significant predictors. Once we found the significant predictors we did numerous shifting of predictors into and out of the model before we came to an conclusion. After we choose the model we then started to go through all of the assumptions checks while utlizing key model metrics. We noticed that all of our assumptions failed and that we had numerous influential points. We removed those influential points creating the model in the **results** section then of course went back through the assumptions summaries and model metrics. To our surprise with those influentials points removed NOTHING CHANGED! Even though the coeffiencients changed for the better all of assumptions still failed.
+  
+  While inferential conclusions were not possible with any of our models, due to assumption violations, we were able to achieve very LOOCV RMSE, reach as low as ~0.05.  Improvements that could be made as a next step could be to sample users with fans between 1 and 25, though more processing power would be required.
+  
+# Appendix
+
+### Data Summary
+1. Variables: 17 
+2. Observations: 5986
+3. Generated variables:
+    a. years_yelping
+    b. avg_rvw_len
+    c. avg_sentiment
+    d. neg_leaning_reviews
+    e. pos_leaning_reviews
+    f. avg_neg_score
+    g. avg_pos_score
+    h. sd_pos_score
+    i. sd_neg_score
+  
+### Data Dictionary
+|Name       |Caption        |Description        |Type     |Notes            |
+|---------|-------------|-----------------|-------|-------------|
+|user_id|User ID|Encrypted user id.|string|From original data set.|
+|average_stars|Average Stars|Average star rating given by a user.|double|From original data set.|
+|friends|Friends|Total number of friends for a user.|int|From original data set.|
+|years_elite|Years Elite|Total number of years user has been elite.|int|From original data set.|
+|review_count|Review Count|Total number of reviews written by user.|int|From original data set.|
+|fans|Fans|Total number of fans a user has.|int|From original data set.|
+|funny_votes|Funny Votes|Total number of funny votes.|int|From original data set.|
+|useful_votes|Useful Votes|Total number of useful votes.|int|From original data set.|
+|cool_votes|Cool Votes|Total number of Cool Votes.|int|From original data set.
+|years_yelping|Years Yelping|Total number of years user has been using yelp.|int|Computed based on user account creation date.|
+|avg_rvw_len|Average Review Length|Average number of characters for all reviews written by a user.|double|Derived from review text for each user.|
+|avg_sentiment|Average Sentiment Score|Average sentiment score for a user.|double|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|neg_leaning_reviews|Negative Leaning Reviews|Total negative leaning reviews.|int|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|pos_leaning_reviews|Positive Leaning Reviews|Total positive leaning reviews|int|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|avg_neg_score|Average Negative Score|Average negative score for a user's text reviews.|double|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|avg_pos_score|Average Positive Score|Average postive score for a user's text reviews.|double|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|sd_pos_score|Standard Deviation of Positve Scores|Standard deviation of the postive scores from a user's text reviews.|double|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
+|sd_neg_score|Standard Deviation of Negative Scores|Standard deviation of the negative scores from a user's text reviews.|double|Derived using sentiment analysis in Python based on the text from a given user's reviews.|
