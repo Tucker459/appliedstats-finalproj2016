@@ -1,0 +1,6 @@
+name: "Methods of Applied Statistics Final Project"
+navbar:
+  title: "What drives Yelping Fans?"
+  left:
+    - text: "Applied Statistics Final Project"
+      href: index.html
