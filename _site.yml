@@ -1,4 +1,5 @@
 name: "Methods of Applied Statistics Final Project"
+output_dir: "."
 navbar:
   title: "What drives Yelping Fans?"
   left:
